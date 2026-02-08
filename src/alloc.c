@@ -45,10 +45,7 @@ Arena* arena_create(const u64 s_arena, const u64 max_nodes) {
 }
 
 void* arena_alloc(Arena* arena, const u64 s_alloc) {
-  if (arena == NULL)
-    return NULL;
-
-  if (s_alloc == 0)
+  if (arena == NULL || s_alloc == 0 || s_alloc > arena->s_arena)
     return NULL;
 
   Arena* node = arena;
@@ -91,7 +88,7 @@ void* arena_realloc(Arena* arena, void* ptr, const u64 s_realloc) {
     return NULL;
 
   if (ptr == NULL)
-    return NULL;
+    return arena_alloc(arena, s_realloc);
 
   if (!__arena_ptr_in_arena(arena, ptr))
     return NULL;
@@ -185,7 +182,7 @@ void arena_print(Arena* arena, FILE* file) {
   fprintf(file, "  size:        %zu bytes;\n", arena_get_size(arena));
   fprintf(file, "  size used:   %zu bytes;\n", arena_get_size_used(arena));
   fprintf(file, "  max nodes:   %zu;\n",       arena_get_size_nodes_max(arena));
-  fprintf(file, "  nº nodes:    %zu;\n}",      arena_get_size_nodes(arena));
+  fprintf(file, "  nº nodes:    %zu;\n}\n",      arena_get_size_nodes(arena));
 }
 
 // Public Pool
@@ -207,6 +204,7 @@ Pool* pool_create(const u64 s_pool, const u64 s_block, const u64 max_nodes) {
   const u64 s_fl_arena = __alloc_utils_min(MB(10), __alloc_utils_max(KB(1), pool->s_pool / 100));
   pool->fl_arena = arena_create(s_fl_arena, 5);
 
+  pool->free_list = NULL;
   __pool_free_region_append(pool, pool->s_pool / pool->s_block, 0);
 
   pool->memory = calloc(1, __pool_size_memory(pool));
@@ -223,7 +221,7 @@ Pool* pool_create(const u64 s_pool, const u64 s_block, const u64 max_nodes) {
 }
 
 void* pool_alloc(Pool* pool, const u64 s_alloc) {
-  if (pool == NULL || s_alloc == 0)
+  if (pool == NULL || s_alloc == 0 || s_alloc > pool->s_pool)
     return NULL;
   
   u64 blocks = __pool_bytes_to_block(pool, s_alloc);
@@ -246,10 +244,6 @@ void* pool_alloc(Pool* pool, const u64 s_alloc) {
       return NULL;
     
     pool->s_nodes++;
-    node = node->next;
-    
-    block_index = 0;
-    break;
   }
   
   if (node == NULL)
@@ -274,10 +268,10 @@ void* pool_alloc_array(Pool* pool, const u64 s_obj, const u32 count) {
 void* pool_realloc(Pool* pool, void* ptr, const u64 s_realloc) {
   if (pool == NULL)
     return NULL;
-  
-  if (ptr == NULL)
-    return NULL;
 
+  if (ptr == NULL)
+    return pool_alloc(pool, s_realloc);
+  
   if (!__pool_ptr_in_pool(pool, ptr))
     return NULL;
 
@@ -285,13 +279,9 @@ void* pool_realloc(Pool* pool, void* ptr, const u64 s_realloc) {
   if (new_ptr == NULL)
     return NULL;
 
-  u64* s_ptr = __alloc_utils_ptr_decr(ptr, S_WORD);
+  u64 old_size = *(u64*)__alloc_utils_ptr_decr(ptr, S_WORD);
 
-  u64 old_size = *s_ptr;
-  if (old_size > s_realloc)
-    return NULL;
-
-  memcpy(new_ptr, ptr, s_realloc);
+  memcpy(new_ptr, ptr, __alloc_utils_min(old_size, s_realloc));
 
   if (!pool_free(pool, ptr)) {
     (void)pool_free(pool, new_ptr);
@@ -434,7 +424,7 @@ void pool_print(Pool* pool, FILE* file) {
   fprintf(file, "  size:        %zu bytes/node;\n",  pool_get_size(pool));
   fprintf(file, "  size used:   %zu bytes total;\n", pool_get_size_used(pool));
   fprintf(file, "  max nodes:   %zu;\n",             pool_get_size_nodes_max(pool));
-  fprintf(file, "  nº nodes:    %zu;\n}",            pool_get_size_nodes(pool));
+  fprintf(file, "  nº nodes:    %zu;\n}\n",            pool_get_size_nodes(pool));
 }
 
 // ====================================# PRIVATE #======================================
@@ -443,8 +433,7 @@ void pool_print(Pool* pool, FILE* file) {
 
 bool __arena_is_full(Arena* arena, const u64 s_alloc) {
   assert(arena != NULL);
-  void* stack_ptr = __alloc_utils_ptr_incr(arena->ptr, S_WORD + s_alloc);
-  return __alloc_utils_ptr_diff(stack_ptr, arena->ptr) >= (ptrdiff_t)arena->s_arena;
+  return S_WORD + s_alloc > arena->s_arena - (u64)__alloc_utils_ptr_diff(arena->ptr, arena->memory);
 }
 
 bool __arena_ptr_in_arena(const Arena* arena, const void* ptr) {
